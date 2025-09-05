@@ -1,0 +1,79 @@
+pipeline {
+    agent any
+
+    tools {
+        jdk 'JDK17'      // Must match Jenkins JDK configuration
+        maven 'Maven3'   // Must match Jenkins Maven configuration
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Kezara666/spring-dockerhub-docker.git'
+            }
+        }
+
+        stage('Build') {
+            options {
+                timeout(time: 10, unit: 'MINUTES')
+            }
+            steps {
+                bat 'mvn clean package'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    bat 'mvn sonar:sonar -Dsonar.projectKey=spring-dockerhub-docker -Dsonar.projectName=spring-dockerhub-docker -Dsonar.host.url=http://localhost:9000 -Dsonar.token=sqa_e2ad2ddd5d0df2afe687dbca82632b0609bdc31a -Dsonar.java.source=17 -Dsonar.sources=src/main/java -Dsonar.tests=src/test/java -Dsonar.java.binaries=target/classes -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml'
+                }
+            }
+        }
+
+        // stage('Quality Gate') {
+        //     steps {
+        //         timeout(time: 5, unit: 'MINUTES') {
+        //             waitForQualityGate abortPipeline: true
+        //         }
+        //     }
+        // }
+
+        stage('Login to DockerHub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    bat """
+                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+                    """
+                }
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            steps {
+                bat "docker build -t kezara666/spring-dockerhub-docker:${env.BUILD_NUMBER} ."
+                bat "docker push kezara666/spring-dockerhub-docker:${env.BUILD_NUMBER}"
+            }
+        }
+
+        stage('Run Container') {
+            steps {
+                bat """
+                    docker stop spring-app || exit 0
+                    docker rm spring-app || exit 0
+                    docker run -d -p 8085:8085 --name spring-app --network my-network kezara666/spring-dockerhub-docker:latest
+                    docker logs spring-app
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            bat 'docker logout'
+        }
+        failure {
+            bat 'docker stop spring-app || exit 0'
+            bat 'docker rm spring-app || exit 0'
+        }
+    }
+}
